@@ -15,30 +15,63 @@ function HTMLService:hasReliablePlaybackEvents(media)
 	return false
 end
 
-local AwesomiumPool = {instances = {}}
-concommand.Add("medialib_awepoolinfo", function()
-	print("AwesomiumPool> Free instance count: " .. #AwesomiumPool.instances)
-end)
--- If there's bunch of awesomium instances in pool, we clean one up every 30 seconds
-timer.Create("MediaLib.AwesomiumPoolCleaner", 30, 0, function()
-	if #AwesomiumPool.instances < 3 then return end
+local HTMLPool = {instances = {}}
+local function GetMaxPoolInstances()
+	return medialib.MAX_HTMLPOOL_INSTANCES or 0
+end
 
-	local inst = table.remove(AwesomiumPool.instances, 1)
+hook.Add("MediaLib_HTMLPoolInfo", medialib.INSTANCE, function()
+	print(medialib.INSTANCE .. "> Free HTMLPool instance count: " .. #HTMLPool.instances .. "/" .. GetMaxPoolInstances())
+end)
+concommand.Add("medialib_htmlpoolinfo", function()
+	hook.Run("MediaLib_HTMLPoolInfo")
+end)
+
+-- Automatic periodic cleanup of html pool objects
+timer.Create("MediaLib." .. medialib.INSTANCE .. ".HTMLPoolCleaner", 60, 0, function()
+	if #HTMLPool.instances == 0 then return end
+
+	local inst = table.remove(HTMLPool.instances, 1)
 	if IsValid(inst) then inst:Remove() end
 end)
-function AwesomiumPool.get()
-	local inst = table.remove(AwesomiumPool.instances, 1)
+function HTMLPool.newInstance()
+	return vgui.Create("DHTML")
+end
+function HTMLPool.get()
+	if #HTMLPool.instances == 0 then
+		if medialib.DEBUG then
+			MsgN("[MediaLib] Returning new instance; htmlpool empty")
+		end
+		return HTMLPool.newInstance()
+	end
+
+	local inst = table.remove(HTMLPool.instances, 1)
 	if not IsValid(inst) then
-		local pnl = vgui.Create("DHTML")
-		return pnl
+		if medialib.DEBUG then
+			MsgN("[MediaLib] Returning new instance; instance was invalid")
+		end
+		return HTMLPool.newInstance()
+	end
+	if medialib.DEBUG then
+		MsgN("[MediaLib] Returning an instance from the HTML pool")
 	end
 	return inst
 end
-function AwesomiumPool.free(inst)
+function HTMLPool.free(inst)
 	if not IsValid(inst) then return end
-	inst:SetHTML("")
 
-	table.insert(AwesomiumPool.instances, inst)
+	if #HTMLPool.instances >= GetMaxPoolInstances() then
+		if medialib.DEBUG then
+			MsgN("[MediaLib] HTMLPool full; removing the freed instance")
+		end
+		inst:Remove()
+	else
+		if medialib.DEBUG then
+			MsgN("[MediaLib] Freeing an instance to the HTMLPool")
+		end
+		inst:SetHTML("")
+		table.insert(HTMLPool.instances, inst)
+	end
 end
 
 local cvar_showAllMessages = CreateConVar("medialib_showallmessages", "0")
@@ -49,7 +82,7 @@ local panel_width, panel_height = 1280, 720
 function HTMLMedia:initialize()
 	self.timeKeeper = oop.class("TimeKeeper")()
 
-	self.panel = AwesomiumPool.get()
+	self.panel = HTMLPool.get()
 
 	local pnl = self.panel
 	pnl:SetPos(0, 0)
@@ -74,6 +107,7 @@ function HTMLMedia:initialize()
 			if string.find(msg, "Unsafe JavaScript attempt to access", nil, true) then return end
 			if string.find(msg, "Unable to post message to", nil, true) then return end
 			if string.find(msg, "ran insecure content from", nil, true) then return end
+			if string.find(msg, "Mixed Content:", nil, true) then return end
 		end
 
 		return oldcm(pself, msg)
@@ -169,6 +203,12 @@ function HTMLMedia:draw(x, y, w, h)
 	self:updateTexture()
 
 	local mat = self:getHTMLMaterial()
+
+	-- [June 2017] CEF GetHTMLMaterial returns nil for some time after panel creation
+	if not mat then
+		return
+	end
+
 	surface.SetMaterial(mat)
 	surface.SetDrawColor(255, 255, 255)
 
@@ -250,7 +290,7 @@ function HTMLMedia:pause()
 	self:runJS("medialibDelegate.run('pause')")
 end
 function HTMLMedia:stop()
-	AwesomiumPool.free(self.panel)
+	HTMLPool.free(self.panel)
 	self.panel = nil
 
 	self.timeKeeper:pause()

@@ -151,8 +151,11 @@ function build(shouldMinify, targetFile) {
 
 	function finished(fragments) {
 		console.log("MediaLib build process finished (fragment #" + fragments.length + ")");
-
-		fs.writeFileSync(targetFile, fragments.join("\n"));
+		var finalCode = fragments.join("\n");
+		if (shouldMinify) {
+			finalCode = minify(finalCode);
+		}
+		fs.writeFileSync(targetFile, finalCode);
 	}
 
 	var loadedModules = {};
@@ -269,4 +272,4 @@ function build(shouldMinify, targetFile) {
 }
 
 build(false, "dist/medialib.lua");
-//build(true, "dist/medialib.min.lua");
+build(true, "dist/medialib.min.lua");

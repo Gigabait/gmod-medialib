@@ -2,6 +2,10 @@
 
 Media library for Garry's Mod.
 
+### Workaround as of 2018/09/30
+
+Awesomium (the embedded web browser) in Garry's Mod doesn't work with Youtube. To fix this you need to use the `chromium` branch for Garry's Mod. See https://github.com/wyozi/gmod-medialib/issues/64 for details.
+
 ### Setup
 
 1. Copy ```dist/medialib.lua``` into your addon/gamemode
@@ -10,12 +14,21 @@ Media library for Garry's Mod.
 	- `local medialib = include("the/path/to/medialib.lua")` if you only use it in one file
 	- `MyGlobalTable.medialib = include("the/path/to/medialib.lua")` if you use it multiple times (you need to refer to medialib as `MyGlobalTable.medialib` or localize it if you do this)
 
-##### Note: SoundCloud API
-SoundCloud support requires an API key (or 'client id'), which must be assigned to the medialib table manually. Here's an example:
+### Configuration
+
+Medialib offers some configuration options that can be set by setting members of the imported medialib object.
 
 ```lua
+-- Example library import
 local medialib = include("medialib.lua")
+
+-- SoundCloud API key. Required for SoundCloud service
+-- Can also be a table in which case a random key is picked for each query.
 medialib.SOUNDCLOUD_API_KEY = "my-key-here"
+
+-- The maximum number of HTML panel instances in the HTML pool
+-- Set this to a sensible number (1-5) if you spawn a lot of HTML medias
+medialib.MAX_HTMLPOOL_INSTANCES = 0
 ```
 
 ### Example

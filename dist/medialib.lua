@@ -2,13 +2,14 @@ local medialib
 
 do
 -- Note: build file expects these exact lines for them to be automatically replaced, so please don't change anything
-local VERSION = "git@8c99637e"
+local VERSION = "git@ea68faeb"
 local DISTRIBUTABLE = true
 
 medialib = {}
 
 medialib.VERSION = VERSION
 medialib.DISTRIBUTABLE = DISTRIBUTABLE
+medialib.INSTANCE = medialib.VERSION .. "_" .. tostring(10000 + math.random(90000))
 
 medialib.Modules = {}
 
@@ -499,7 +500,7 @@ end
 media.GuessService = media.guessService -- alias
 
 end
--- 'mediaregistry'; CodeLen/MinifiedLen 1248/1248; Dependencies []
+-- 'mediaregistry'; CodeLen/MinifiedLen 1246/1246; Dependencies []
 medialib.modulePlaceholder("mediaregistry")
 do
 local mediaregistry = medialib.module("mediaregistry")
@@ -516,9 +517,8 @@ end
 concommand.Add("medialib_listall", function()
 	hook.Run("MediaLib_ListAll")
 end)
-local vers = medialib.VERSION
-hook.Add("MediaLib_ListAll", "MediaLib_" .. vers, function()
-	print("Media for medialib version " .. vers .. ":")
+hook.Add("MediaLib_ListAll", "MediaLib_" .. medialib.INSTANCE, function()
+	print("Media for medialib version " .. medialib.INSTANCE .. ":")
 	for _,v in pairs(cache) do
 		print(v:getDebugInfo())
 	end
@@ -527,7 +527,7 @@ end)
 concommand.Add("medialib_stopall", function()
 	hook.Run("MediaLib_StopAll")
 end)
-hook.Add("MediaLib_StopAll", "MediaLib_" .. medialib.VERSION, function()
+hook.Add("MediaLib_StopAll", "MediaLib_" .. medialib.INSTANCE, function()
 	for _,v in pairs(cache) do
 		v:stop()
 	end
@@ -542,7 +542,7 @@ hook.Add("HUDPaint", "MediaLib_G_DebugMedia", function()
 	hook.Run("MediaLib_DebugPaint", counter)
 end)
 
-hook.Add("MediaLib_DebugPaint", "MediaLib_" .. medialib.VERSION, function(counter)
+hook.Add("MediaLib_DebugPaint", "MediaLib_" .. medialib.INSTANCE, function(counter)
 	local i = counter[1]
 	for _,media in pairs(cache) do
 		local t = string.format("#%d %s", i, media:getDebugInfo())
@@ -697,7 +697,7 @@ function TimeKeeper:seek(time)
 	end
 end
 end
--- 'service_html'; CodeLen/MinifiedLen 7390/7390; Dependencies [oop,timekeeper]
+-- 'service_html'; CodeLen/MinifiedLen 8426/8426; Dependencies [oop,timekeeper]
 medialib.modulePlaceholder("service_html")
 do
 local oop = medialib.load("oop")
@@ -717,30 +717,63 @@ function HTMLService:hasReliablePlaybackEvents(media)
 	return false
 end
 
-local AwesomiumPool = {instances = {}}
-concommand.Add("medialib_awepoolinfo", function()
-	print("AwesomiumPool> Free instance count: " .. #AwesomiumPool.instances)
-end)
--- If there's bunch of awesomium instances in pool, we clean one up every 30 seconds
-timer.Create("MediaLib.AwesomiumPoolCleaner", 30, 0, function()
-	if #AwesomiumPool.instances < 3 then return end
+local HTMLPool = {instances = {}}
+local function GetMaxPoolInstances()
+	return medialib.MAX_HTMLPOOL_INSTANCES or 0
+end
 
-	local inst = table.remove(AwesomiumPool.instances, 1)
+hook.Add("MediaLib_HTMLPoolInfo", medialib.INSTANCE, function()
+	print(medialib.INSTANCE .. "> Free HTMLPool instance count: " .. #HTMLPool.instances .. "/" .. GetMaxPoolInstances())
+end)
+concommand.Add("medialib_htmlpoolinfo", function()
+	hook.Run("MediaLib_HTMLPoolInfo")
+end)
+
+-- Automatic periodic cleanup of html pool objects
+timer.Create("MediaLib." .. medialib.INSTANCE .. ".HTMLPoolCleaner", 60, 0, function()
+	if #HTMLPool.instances == 0 then return end
+
+	local inst = table.remove(HTMLPool.instances, 1)
 	if IsValid(inst) then inst:Remove() end
 end)
-function AwesomiumPool.get()
-	local inst = table.remove(AwesomiumPool.instances, 1)
+function HTMLPool.newInstance()
+	return vgui.Create("DHTML")
+end
+function HTMLPool.get()
+	if #HTMLPool.instances == 0 then
+		if medialib.DEBUG then
+			MsgN("[MediaLib] Returning new instance; htmlpool empty")
+		end
+		return HTMLPool.newInstance()
+	end
+
+	local inst = table.remove(HTMLPool.instances, 1)
 	if not IsValid(inst) then
-		local pnl = vgui.Create("DHTML")
-		return pnl
+		if medialib.DEBUG then
+			MsgN("[MediaLib] Returning new instance; instance was invalid")
+		end
+		return HTMLPool.newInstance()
+	end
+	if medialib.DEBUG then
+		MsgN("[MediaLib] Returning an instance from the HTML pool")
 	end
 	return inst
 end
-function AwesomiumPool.free(inst)
+function HTMLPool.free(inst)
 	if not IsValid(inst) then return end
-	inst:SetHTML("")
 
-	table.insert(AwesomiumPool.instances, inst)
+	if #HTMLPool.instances >= GetMaxPoolInstances() then
+		if medialib.DEBUG then
+			MsgN("[MediaLib] HTMLPool full; removing the freed instance")
+		end
+		inst:Remove()
+	else
+		if medialib.DEBUG then
+			MsgN("[MediaLib] Freeing an instance to the HTMLPool")
+		end
+		inst:SetHTML("")
+		table.insert(HTMLPool.instances, inst)
+	end
 end
 
 local cvar_showAllMessages = CreateConVar("medialib_showallmessages", "0")
@@ -751,7 +784,7 @@ local panel_width, panel_height = 1280, 720
 function HTMLMedia:initialize()
 	self.timeKeeper = oop.class("TimeKeeper")()
 
-	self.panel = AwesomiumPool.get()
+	self.panel = HTMLPool.get()
 
 	local pnl = self.panel
 	pnl:SetPos(0, 0)
@@ -776,6 +809,7 @@ function HTMLMedia:initialize()
 			if string.find(msg, "Unsafe JavaScript attempt to access", nil, true) then return end
 			if string.find(msg, "Unable to post message to", nil, true) then return end
 			if string.find(msg, "ran insecure content from", nil, true) then return end
+			if string.find(msg, "Mixed Content:", nil, true) then return end
 		end
 
 		return oldcm(pself, msg)
@@ -871,6 +905,12 @@ function HTMLMedia:draw(x, y, w, h)
 	self:updateTexture()
 
 	local mat = self:getHTMLMaterial()
+
+	-- [June 2017] CEF GetHTMLMaterial returns nil for some time after panel creation
+	if not mat then
+		return
+	end
+
 	surface.SetMaterial(mat)
 	surface.SetDrawColor(255, 255, 255)
 
@@ -952,7 +992,7 @@ function HTMLMedia:pause()
 	self:runJS("medialibDelegate.run('pause')")
 end
 function HTMLMedia:stop()
-	AwesomiumPool.free(self.panel)
+	HTMLPool.free(self.panel)
 	self.panel = nil
 
 	self.timeKeeper:pause()
@@ -974,7 +1014,7 @@ function HTMLMedia:isValid()
 end
 
 end
--- 'service_bass'; CodeLen/MinifiedLen 6685/6685; Dependencies [oop,mediaregistry]
+-- 'service_bass'; CodeLen/MinifiedLen 6686/6686; Dependencies [oop,mediaregistry]
 medialib.modulePlaceholder("service_bass")
 do
 local oop = medialib.load("oop")
@@ -1082,7 +1122,7 @@ function BASSMedia:reload()
 	end
 
 	self:applyVolume(true)
-	
+
 	if self._commandState == "play" then
 		self:play()
 	end
@@ -1240,7 +1280,7 @@ end
 
 local mediaregistry = medialib.load("mediaregistry")
 
-local netmsgid = "ML_MapCleanHack_" .. medialib.VERSION
+local netmsgid = "ML_MapCleanHack_" .. medialib.INSTANCE
 if CLIENT then
 
 	-- Logic for reloading BASS streams after map cleanups
@@ -1257,7 +1297,7 @@ if CLIENT then
 end
 if SERVER then
 	util.AddNetworkString(netmsgid)
-	hook.Add("PostCleanupMap", "MediaLib_BassReload" .. medialib.VERSION, function()
+	hook.Add("PostCleanupMap", "MediaLib_BassReload" .. medialib.INSTANCE, function()
 		net.Start(netmsgid)
 		net.Broadcast()
 	end)
@@ -1265,13 +1305,13 @@ end
 end
 medialib.FolderItems["services/gdrive.lua"] = "local oop = medialib.load(\"oop\")\n\nlocal GDriveService = oop.class(\"GDriveService\", \"HTMLService\")\nGDriveService.identifier = \"GDrive\"\n\nlocal all_patterns = {\"^https?://drive.google.com/file/d/([^/]*)/edit\"}\n\nfunction GDriveService:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal id = string.match(url, pattern)\n\t\tif id then\n\t\t\treturn {id = id}\n\t\tend\n\tend\nend\n\nfunction GDriveService:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nlocal function urlencode(str)\n   if (str) then\n      str = string.gsub (str, \"\\n\", \"\\r\\n\")\n      str = string.gsub (str, \"([^%w ])\",\n         function (c) return string.format (\"%%%02X\", string.byte(c)) end)\n      str = string.gsub (str, \" \", \"+\")\n   end\n   return str    \nend\n\nlocal player_url = \"https://wyozi.github.io/gmod-medialib/mp4.html?id=%s\"\nlocal gdrive_stream_url = \"https://drive.google.com/uc?export=download&confirm=yTib&id=%s\"\nfunction GDriveService:resolveUrl(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal playerUrl = string.format(player_url, urlencode(string.format(gdrive_stream_url, urlData.id)))\n\n\tcallback(playerUrl, {start = urlData.start})\nend\n\nfunction GDriveService:directQuery(url, callback)\n\tcallback(nil, {\n\t\ttitle = url:match(\"([^/]+)$\")\n\t})\nend\n\nfunction GDriveService:hasReliablePlaybackEvents(media)\n\treturn true\nend\n\nreturn GDriveService"
 medialib.FolderItems["services/mp4.lua"] = "local oop = medialib.load(\"oop\")\n\nlocal Mp4Service = oop.class(\"Mp4Service\", \"HTMLService\")\nMp4Service.identifier = \"mp4\"\n\nlocal all_patterns = {\"^https?://.*%.mp4\"}\n\nfunction Mp4Service:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal id = string.match(url, pattern)\n\t\tif id then\n\t\t\treturn {id = id}\n\t\tend\n\tend\nend\n\nfunction Mp4Service:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nlocal player_url = \"https://wyozi.github.io/gmod-medialib/mp4.html?id=%s\"\nfunction Mp4Service:resolveUrl(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal playerUrl = string.format(player_url, urlData.id)\n\n\tcallback(playerUrl, {start = urlData.start})\nend\n\nfunction Mp4Service:directQuery(url, callback)\n\tcallback(nil, {\n\t\ttitle = url:match(\"([^/]+)$\")\n\t})\nend\n\nfunction Mp4Service:hasReliablePlaybackEvents(media)\n\treturn true\nend\n\nreturn Mp4Service"
-medialib.FolderItems["services/soundcloud.lua"] = "local oop = medialib.load(\"oop\")\n\nlocal SoundcloudService = oop.class(\"SoundcloudService\", \"BASSService\")\nSoundcloudService.identifier = \"soundcloud\"\n\nlocal all_patterns = {\n\t\"^https?://www.soundcloud.com/([A-Za-z0-9_%-]+/[A-Za-z0-9_%-]+)/?.*$\",\n\t\"^https?://soundcloud.com/([A-Za-z0-9_%-]+/[A-Za-z0-9_%-]+)/?.*$\",\n}\n\n-- Support url that passes track id directly\nlocal id_pattern = \"^https?://api.soundcloud.com/tracks/(%d+)\"\n\nfunction SoundcloudService:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal path = string.match(url, pattern)\n\t\tif path then\n\t\t\treturn {path = path}\n\t\tend\n\tend\n\n\tlocal id = string.match(url, id_pattern)\n\tif id then\n\t\treturn {id = id}\n\tend\nend\n\nfunction SoundcloudService:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nfunction SoundcloudService:resolveUrl(url, callback)\n\tlocal apiKey = medialib.SOUNDCLOUD_API_KEY\n\tif not apiKey then\n\t\tErrorNoHalt(\"SoundCloud error: Missing SoundCloud API key\")\n\t\treturn\n\tend\n\n\tlocal urlData = self:parseUrl(url)\n\n\tif urlData.id then\n\t\t-- id passed directly; nice, we can skip resolve.json\n\t\tcallback(string.format(\"https://api.soundcloud.com/tracks/%s/stream?client_id=%s\", urlData.id, apiKey), {})\n\telse\n\t\thttp.Fetch(\n\t\t\tstring.format(\"https://api.soundcloud.com/resolve.json?url=http://soundcloud.com/%s&client_id=%s\", urlData.path, apiKey),\n\t\t\tfunction(data)\n\t\t\t\tlocal jsonTable = util.JSONToTable(data)\n\t\t\t\tif not jsonTable then\n\t\t\t\t\tErrorNoHalt(\"Failed to retrieve SC track id for \" .. urlData.path .. \": empty JSON\")\n\t\t\t\t\treturn\n\t\t\t\tend\n\n\t\t\t\tlocal id = jsonTable.id\n\t\t\t\tcallback(string.format(\"https://api.soundcloud.com/tracks/%s/stream?client_id=%s\", id, apiKey), {})\n\t\t\tend)\n\tend\nend\n\nfunction SoundcloudService:directQuery(url, callback)\n\tlocal apiKey = medialib.SOUNDCLOUD_API_KEY\n\tif not apiKey then\n\t\tcallback(\"Missing SoundCloud API key\")\n\t\treturn\n\tend\n\n\tlocal urlData = self:parseUrl(url)\n\n\tlocal metaurl\n\tif urlData.path then\n\t\tmetaurl = string.format(\"https://api.soundcloud.com/resolve.json?url=http://soundcloud.com/%s&client_id=%s\", urlData.path, apiKey)\n\telse\n\t\tmetaurl = string.format(\"https://api.soundcloud.com/tracks/%s?client_id=%s\", urlData.id, apiKey)\n\tend\n\n\thttp.Fetch(metaurl, function(result, size)\n\t\tif size == 0 then\n\t\t\tcallback(\"http body size = 0\")\n\t\t\treturn\n\t\tend\n\n\t\tlocal entry = util.JSONToTable(result)\n\n\t\tif entry.errors then\n\t\t\tlocal msg = entry.errors[1].error_message or \"error\"\n\n\t\t\tlocal translated = msg\n\t\t\tif string.StartWith(msg, \"404\") then\n\t\t\t\ttranslated = \"Invalid id\"\n\t\t\tend\n\n\t\t\tcallback(translated)\n\t\t\treturn\n\t\tend\n\n\t\tcallback(nil, {\n\t\t\ttitle = entry.title,\n\t\t\tduration = tonumber(entry.duration) / 1000\n\t\t})\n\tend, function(err) callback(\"HTTP: \" .. err) end)\nend\n\nreturn SoundcloudService\n"
-medialib.FolderItems["services/twitch.lua"] = "local oop = medialib.load(\"oop\")\n\nlocal TwitchService = oop.class(\"TwitchService\", \"HTMLService\")\nTwitchService.identifier = \"twitch\"\n\nlocal all_patterns = {\n\t\"https?://www.twitch.tv/([A-Za-z0-9_%-]+)\",\n\t\"https?://twitch.tv/([A-Za-z0-9_%-]+)\"\n}\n\nfunction TwitchService:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal id = string.match(url, pattern)\n\t\tif id then\n\t\t\treturn {id = id}\n\t\tend\n\tend\nend\n\nfunction TwitchService:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nlocal player_url = \"https://wyozi.github.io/gmod-medialib/twitch.html?channel=%s\"\nfunction TwitchService:resolveUrl(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal playerUrl = string.format(player_url, urlData.id)\n\n\tcallback(playerUrl, {start = urlData.start})\nend\n\nfunction TwitchService:directQuery(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal metaurl = string.format(\"https://api.twitch.tv/kraken/channels/%s\", urlData.id)\n\n\thttp.Fetch(metaurl, function(result, size)\n\t\tif size == 0 then\n\t\t\tcallback(\"http body size = 0\")\n\t\t\treturn\n\t\tend\n\n\t\tlocal data = {}\n\t\tdata.id = urlData.id\n\n\t\tlocal jsontbl = util.JSONToTable(result)\n\n\t\tif jsontbl then\n\t\t\tif jsontbl.error then\n\t\t\t\tcallback(jsontbl.message)\n\t\t\t\treturn\n\t\t\telse\n\t\t\t\tdata.title = jsontbl.display_name .. \": \" .. jsontbl.status\n\t\t\tend\n\t\telse\n\t\t\tdata.title = \"ERROR\"\n\t\tend\n\n\t\tcallback(nil, data)\n\tend, function(err) callback(\"HTTP: \" .. err) end)\nend\n\nreturn TwitchService"
+medialib.FolderItems["services/soundcloud.lua"] = "local oop = medialib.load(\"oop\")\n\nlocal SoundcloudService = oop.class(\"SoundcloudService\", \"BASSService\")\nSoundcloudService.identifier = \"soundcloud\"\n\nlocal all_patterns = {\n\t\"^https?://www.soundcloud.com/([A-Za-z0-9_%-]+/[A-Za-z0-9_%-]+)/?.*$\",\n\t\"^https?://soundcloud.com/([A-Za-z0-9_%-]+/[A-Za-z0-9_%-]+)/?.*$\",\n}\n\n-- Support url that passes track id directly\nlocal id_pattern = \"^https?://api.soundcloud.com/tracks/(%d+)\"\n\nfunction SoundcloudService:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal path = string.match(url, pattern)\n\t\tif path then\n\t\t\treturn {path = path}\n\t\tend\n\tend\n\n\tlocal id = string.match(url, id_pattern)\n\tif id then\n\t\treturn {id = id}\n\tend\nend\n\nfunction SoundcloudService:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nfunction SoundcloudService:resolveUrl(url, callback)\n\tlocal apiKey = medialib.SOUNDCLOUD_API_KEY\n\tif not apiKey then\n\t\tErrorNoHalt(\"SoundCloud error: Missing SoundCloud API key\")\n\t\treturn\n\tend\n\n\tif type(apiKey) == \"table\" then\n\t\tapiKey = table.Random(apiKey)\n\tend\n\n\tlocal urlData = self:parseUrl(url)\n\n\tif urlData.id then\n\t\t-- id passed directly; nice, we can skip resolve.json\n\t\tcallback(string.format(\"https://api.soundcloud.com/tracks/%s/stream?client_id=%s\", urlData.id, apiKey), {})\n\telse\n\t\thttp.Fetch(\n\t\t\tstring.format(\"https://api.soundcloud.com/resolve.json?url=http://soundcloud.com/%s&client_id=%s\", urlData.path, apiKey),\n\t\t\tfunction(data)\n\t\t\t\tlocal jsonTable = util.JSONToTable(data)\n\t\t\t\tif not jsonTable then\n\t\t\t\t\tErrorNoHalt(\"Failed to retrieve SC track id for \" .. urlData.path .. \": empty JSON\")\n\t\t\t\t\treturn\n\t\t\t\tend\n\n\t\t\t\tlocal id = jsonTable.id\n\t\t\t\tcallback(string.format(\"https://api.soundcloud.com/tracks/%s/stream?client_id=%s\", id, apiKey), {})\n\t\t\tend)\n\tend\nend\n\nfunction SoundcloudService:directQuery(url, callback)\n\tlocal apiKey = medialib.SOUNDCLOUD_API_KEY\n\tif not apiKey then\n\t\tcallback(\"Missing SoundCloud API key\")\n\t\treturn\n\tend\n\n\tif type(apiKey) == \"table\" then\n\t\tapiKey = table.Random(apiKey)\n\tend\n\n\tlocal urlData = self:parseUrl(url)\n\n\tlocal metaurl\n\tif urlData.path then\n\t\tmetaurl = string.format(\"https://api.soundcloud.com/resolve.json?url=http://soundcloud.com/%s&client_id=%s\", urlData.path, apiKey)\n\telse\n\t\tmetaurl = string.format(\"https://api.soundcloud.com/tracks/%s?client_id=%s\", urlData.id, apiKey)\n\tend\n\n\thttp.Fetch(metaurl, function(result, size)\n\t\tif size == 0 then\n\t\t\tcallback(\"http body size = 0\")\n\t\t\treturn\n\t\tend\n\n\t\tlocal entry = util.JSONToTable(result)\n\n\t\tif entry.errors then\n\t\t\tlocal msg = entry.errors[1].error_message or \"error\"\n\n\t\t\tlocal translated = msg\n\t\t\tif string.StartWith(msg, \"404\") then\n\t\t\t\ttranslated = \"Invalid id\"\n\t\t\tend\n\n\t\t\tcallback(translated)\n\t\t\treturn\n\t\tend\n\n\t\tcallback(nil, {\n\t\t\ttitle = entry.title,\n\t\t\tduration = tonumber(entry.duration) / 1000\n\t\t})\n\tend, function(err) callback(\"HTTP: \" .. err) end)\nend\n\nreturn SoundcloudService\n"
+medialib.FolderItems["services/twitch.lua"] = "local oop = medialib.load(\"oop\")\n\nlocal TwitchService = oop.class(\"TwitchService\", \"HTMLService\")\nTwitchService.identifier = \"twitch\"\n\nlocal all_patterns = {\n\t\"https?://www.twitch.tv/([A-Za-z0-9_%-]+)\",\n\t\"https?://twitch.tv/([A-Za-z0-9_%-]+)\"\n}\n\nfunction TwitchService:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal id = string.match(url, pattern)\n\t\tif id then\n\t\t\treturn {id = id}\n\t\tend\n\tend\nend\n\nfunction TwitchService:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nlocal player_url = \"https://wyozi.github.io/gmod-medialib/twitch.html?channel=%s\"\nfunction TwitchService:resolveUrl(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal playerUrl = string.format(player_url, urlData.id)\n\n\tcallback(playerUrl, {start = urlData.start})\nend\n\nlocal CLIENT_ID = \"4cryixome326gh0x0j0fkulahsbdvx\"\n\nlocal function nameToId(name, callback)\n\thttp.Fetch(\"https://api.twitch.tv/kraken/users?login=\" .. name, function(b)\n\t\tlocal obj = util.JSONToTable(b)\n\t\tif not obj then\n\t\t\tcallback(\"malformed response JSON\")\n\t\t\treturn\n\t\tend\n\n\t\tcallback(nil, obj.users[1]._id)\n\tend, function()\n\t\tcallback(\"failed HTTP request\")\n\tend, {\n\t\tAccept = \"application/vnd.twitchtv.v5+json\",\n\t\t[\"Client-ID\"] = CLIENT_ID\n\t})\nend\n\nlocal function metaQuery(id, callback)\n\thttp.Fetch(\"https://api.twitch.tv/kraken/channels/\" .. id, function(b)\n\t\tlocal obj = util.JSONToTable(b)\n\t\tif not obj then\n\t\t\tcallback(\"malformed response JSON\")\n\t\t\treturn\n\t\tend\n\n\t\tcallback(nil, obj)\n\tend, function()\n\t\tcallback(\"failed HTTP request\")\n\tend, {\n\t\tAccept = \"application/vnd.twitchtv.v5+json\",\n\t\t[\"Client-ID\"] = CLIENT_ID\n\t})\nend\n\nfunction TwitchService:directQuery(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\n\tnameToId(urlData.id, function(err, id)\n\t\tif err then\n\t\t\tcallback(err)\n\t\t\treturn\n\t\tend\n\n\t\tmetaQuery(id, function(err, meta)\n\t\t\tif err then\n\t\t\t\tcallback(err)\n\t\t\t\treturn\n\t\t\tend\n\n\t\t\tlocal data = {}\n\t\t\tdata.id = urlData.id\n\n\t\t\tif meta.error then\n\t\t\t\tcallback(meta.message)\n\t\t\t\treturn\n\t\t\telse\n\t\t\t\tdata.title = meta.display_name .. \": \" .. meta.status\n\t\t\tend\n\n\t\t\tcallback(nil, data)\n\t\tend)\n\tend)\nend\n\nreturn TwitchService"
 medialib.FolderItems["services/vimeo.lua"] = "local oop = medialib.load(\"oop\")\n\nlocal VimeoService = oop.class(\"VimeoService\", \"HTMLService\")\nVimeoService.identifier = \"vimeo\"\n\nlocal all_patterns = {\n\t\"https?://www.vimeo.com/([0-9]+)\",\n\t\"https?://vimeo.com/([0-9]+)\",\n\t\"https?://www.vimeo.com/channels/staffpicks/([0-9]+)\",\n\t\"https?://vimeo.com/channels/staffpicks/([0-9]+)\",\n}\n\nfunction VimeoService:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal id = string.match(url, pattern)\n\t\tif id then\n\t\t\treturn {id = id}\n\t\tend\n\tend\nend\n\nfunction VimeoService:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nlocal player_url = \"http://wyozi.github.io/gmod-medialib/vimeo.html?id=%s\"\nfunction VimeoService:resolveUrl(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal playerUrl = string.format(player_url, urlData.id)\n\n\tcallback(playerUrl, {start = urlData.start})\nend\n\nfunction VimeoService:directQuery(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal metaurl = string.format(\"http://vimeo.com/api/v2/video/%s.json\", urlData.id)\n\n\thttp.Fetch(metaurl, function(result, size, headers, httpcode)\n\t\tif size == 0 then\n\t\t\tcallback(\"http body size = 0\")\n\t\t\treturn\n\t\tend\n\n\t\tif httpcode == 404 then\n\t\t\tcallback(\"Invalid id\")\n\t\t\treturn\n\t\tend\n\n\t\tlocal data = {}\n\t\tdata.id = urlData.id\n\n\t\tlocal jsontbl = util.JSONToTable(result)\n\n\t\tif jsontbl then\n\t\t\tdata.title = jsontbl[1].title\n\t\t\tdata.duration = jsontbl[1].duration\n\t\telse\n\t\t\tdata.title = \"ERROR\"\n\t\tend\n\n\t\tcallback(nil, data)\n\tend, function(err) callback(\"HTTP: \" .. err) end)\nend\n\nfunction VimeoService:hasReliablePlaybackEvents(media)\n\treturn true\nend\n\nreturn VimeoService\n"
 medialib.FolderItems["services/webaudio.lua"] = "local oop = medialib.load(\"oop\")\nlocal WebAudioService = oop.class(\"WebAudioService\", \"BASSService\")\nWebAudioService.identifier = \"webaudio\"\n\nlocal all_patterns = {\n\t\"^https?://(.*)%.mp3\",\n\t\"^https?://(.*)%.ogg\",\n}\n\nfunction WebAudioService:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal id = string.match(url, pattern)\n\t\tif id then\n\t\t\treturn {id = id}\n\t\tend\n\tend\nend\n\nfunction WebAudioService:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nfunction WebAudioService:resolveUrl(url, callback)\n\tcallback(url, {})\nend\n\nfunction WebAudioService:directQuery(url, callback)\n\tcallback(nil, {\n\t\ttitle = url:match(\"([^/]+)$\")\n\t})\nend\n\nreturn WebAudioService"
 medialib.FolderItems["services/webm.lua"] = "local oop = medialib.load(\"oop\")\n\nlocal WebmService = oop.class(\"WebmService\", \"HTMLService\")\nWebmService.identifier = \"webm\"\n\nlocal all_patterns = {\"^https?://.*%.webm\"}\n\nfunction WebmService:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal id = string.match(url, pattern)\n\t\tif id then\n\t\t\treturn {id = id}\n\t\tend\n\tend\nend\n\nfunction WebmService:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nlocal player_url = \"http://wyozi.github.io/gmod-medialib/webm.html?id=%s\"\nfunction WebmService:resolveUrl(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal playerUrl = string.format(player_url, urlData.id)\n\n\tcallback(playerUrl, {start = urlData.start})\nend\n\nfunction WebmService:directQuery(url, callback)\n\tcallback(nil, {\n\t\ttitle = url:match(\"([^/]+)$\")\n\t})\nend\n\nreturn WebmService"
 medialib.FolderItems["services/webradio.lua"] = "local oop = medialib.load(\"oop\")\nlocal WebRadioService = oop.class(\"WebRadioService\", \"BASSService\")\nWebRadioService.identifier = \"webradio\"\n\nlocal all_patterns = {\n\t\"^https?://(.*)%.pls\",\n\t\"^https?://(.*)%.m3u\"\n}\n\nfunction WebRadioService:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal id = string.match(url, pattern)\n\t\tif id then\n\t\t\treturn {id = id}\n\t\tend\n\tend\nend\n\nfunction WebRadioService:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nfunction WebRadioService:resolveUrl(url, callback)\n\tcallback(url, {})\nend\n\nfunction WebRadioService:directQuery(url, callback)\n\tcallback(nil, {\n\t\ttitle = url:match(\"([^/]+)$\") -- the filename is the best we can get (unless we parse pls?)\n\t})\nend\n\nreturn WebRadioService"
-medialib.FolderItems["services/youtube.lua"] = "local oop = medialib.load(\"oop\")\n\nlocal YoutubeService = oop.class(\"YoutubeService\", \"HTMLService\")\nYoutubeService.identifier = \"youtube\"\n\nlocal raw_patterns = {\n\t\"^https?://[A-Za-z0-9%.%-]*%.?youtu%.be/([A-Za-z0-9_%-]+)\",\n\t\"^https?://[A-Za-z0-9%.%-]*%.?youtube%.com/watch%?.*v=([A-Za-z0-9_%-]+)\",\n\t\"^https?://[A-Za-z0-9%.%-]*%.?youtube%.com/v/([A-Za-z0-9_%-]+)\",\n}\nlocal all_patterns = {}\n\n-- Appends time modifier patterns to each pattern\nfor k,p in pairs(raw_patterns) do\n\tlocal function with_sep(sep)\n\t\ttable.insert(all_patterns, p .. sep .. \"t=(%d+)m(%d+)s\")\n\t\ttable.insert(all_patterns, p .. sep .. \"t=(%d+)s?\")\n\tend\n\n\t-- We probably support more separators than youtube itself, but that does not matter\n\twith_sep(\"#\")\n\twith_sep(\"&\")\n\twith_sep(\"?\")\n\n\ttable.insert(all_patterns, p)\nend\n\nfunction YoutubeService:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal id, time1, time2 = string.match(url, pattern)\n\t\tif id then\n\t\t\tlocal time_sec = 0\n\t\t\tif time1 and time2 then\n\t\t\t\ttime_sec = tonumber(time1)*60 + tonumber(time2)\n\t\t\telse\n\t\t\t\ttime_sec = tonumber(time1)\n\t\t\tend\n\n\t\t\treturn {\n\t\t\t\tid = id,\n\t\t\t\tstart = time_sec\n\t\t\t}\n\t\tend\n\tend\nend\n\nfunction YoutubeService:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nlocal player_url = \"https://wyozi.github.io/gmod-medialib/youtube.html?id=%s\"\nfunction YoutubeService:resolveUrl(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal playerUrl = string.format(player_url, urlData.id)\n\n\tcallback(playerUrl, {start = urlData.start})\nend\n\n-- http://en.wikipedia.org/wiki/ISO_8601#Durations\n-- Cheers wiox :))\nlocal function PTToSeconds(str)\n\tlocal h = str:match(\"(%d+)H\") or 0\n\tlocal m = str:match(\"(%d+)M\") or 0\n\tlocal s = str:match(\"(%d+)S\") or 0\n\treturn h*(60*60) + m*60 + s\nend\n\nlocal API_KEY = \"AIzaSyBmQHvMSiOTrmBKJ0FFJ2LmNtc4YHyUJaQ\"\nfunction YoutubeService:directQuery(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal metaurl = string.format(\"https://www.googleapis.com/youtube/v3/videos?part=snippet%%2CcontentDetails&id=%s&key=%s\", urlData.id, API_KEY)\n\n\thttp.Fetch(metaurl, function(result, size)\n\t\tif size == 0 then\n\t\t\tcallback(\"http body size = 0\")\n\t\t\treturn\n\t\tend\n\n\t\tlocal data = {}\n\t\tdata.id = urlData.id\n\n\t\tlocal jsontbl = util.JSONToTable(result)\n\n\t\tif jsontbl and jsontbl.items then\n\t\t\tlocal item = jsontbl.items[1]\n\t\t\tif not item then\n\t\t\t\tcallback(\"No video id found\")\n\t\t\t\treturn\n\t\t\tend\n\n\t\t\tdata.title = item.snippet.title\n\t\t\tdata.duration = tonumber(PTToSeconds(item.contentDetails.duration))\n\t\telse\n\t\t\tcallback(result)\n\t\t\treturn\n\t\tend\n\n\t\tcallback(nil, data)\n\tend, function(err) callback(\"HTTP: \" .. err) end)\nend\n\nfunction YoutubeService:hasReliablePlaybackEvents(media)\n\treturn true\nend\n\nreturn YoutubeService\n"
+medialib.FolderItems["services/youtube.lua"] = "local oop = medialib.load(\"oop\")\n\nlocal YoutubeService = oop.class(\"YoutubeService\", \"HTMLService\")\nYoutubeService.identifier = \"youtube\"\n\nlocal raw_patterns = {\n\t\"^https?://[A-Za-z0-9%.%-]*%.?youtu%.be/([A-Za-z0-9_%-]+)\",\n\t\"^https?://[A-Za-z0-9%.%-]*%.?youtube%.com/watch%?.*v=([A-Za-z0-9_%-]+)\",\n\t\"^https?://[A-Za-z0-9%.%-]*%.?youtube%.com/v/([A-Za-z0-9_%-]+)\",\n}\nlocal all_patterns = {}\n\n-- Appends time modifier patterns to each pattern\nfor k,p in pairs(raw_patterns) do\n\tlocal function with_sep(sep)\n\t\ttable.insert(all_patterns, p .. sep .. \"t=(%d+)m(%d+)s\")\n\t\ttable.insert(all_patterns, p .. sep .. \"t=(%d+)s?\")\n\tend\n\n\t-- We probably support more separators than youtube itself, but that does not matter\n\twith_sep(\"#\")\n\twith_sep(\"&\")\n\twith_sep(\"?\")\n\n\ttable.insert(all_patterns, p)\nend\n\nfunction YoutubeService:parseUrl(url)\n\tfor _,pattern in pairs(all_patterns) do\n\t\tlocal id, time1, time2 = string.match(url, pattern)\n\t\tif id then\n\t\t\tlocal time_sec = 0\n\t\t\tif time1 and time2 then\n\t\t\t\ttime_sec = tonumber(time1)*60 + tonumber(time2)\n\t\t\telse\n\t\t\t\ttime_sec = tonumber(time1)\n\t\t\tend\n\n\t\t\treturn {\n\t\t\t\tid = id,\n\t\t\t\tstart = time_sec\n\t\t\t}\n\t\tend\n\tend\nend\n\nfunction YoutubeService:isValidUrl(url)\n\treturn self:parseUrl(url) ~= nil\nend\n\nlocal player_url = \"http://wyozi.github.io/gmod-medialib/youtube.html?id=%s\"\nfunction YoutubeService:resolveUrl(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal playerUrl = string.format(player_url, urlData.id)\n\n\tcallback(playerUrl, {start = urlData.start})\nend\n\n-- http://en.wikipedia.org/wiki/ISO_8601#Durations\n-- Cheers wiox :))\nlocal function PTToSeconds(str)\n\tlocal h = str:match(\"(%d+)H\") or 0\n\tlocal m = str:match(\"(%d+)M\") or 0\n\tlocal s = str:match(\"(%d+)S\") or 0\n\treturn h*(60*60) + m*60 + s\nend\n\nlocal API_KEY = \"AIzaSyBmQHvMSiOTrmBKJ0FFJ2LmNtc4YHyUJaQ\"\nfunction YoutubeService:directQuery(url, callback)\n\tlocal urlData = self:parseUrl(url)\n\tlocal metaurl = string.format(\"https://www.googleapis.com/youtube/v3/videos?part=snippet%%2CcontentDetails&id=%s&key=%s\", urlData.id, API_KEY)\n\n\thttp.Fetch(metaurl, function(result, size)\n\t\tif size == 0 then\n\t\t\tcallback(\"http body size = 0\")\n\t\t\treturn\n\t\tend\n\n\t\tlocal data = {}\n\t\tdata.id = urlData.id\n\n\t\tlocal jsontbl = util.JSONToTable(result)\n\n\t\tif jsontbl and jsontbl.items then\n\t\t\tlocal item = jsontbl.items[1]\n\t\t\tif not item then\n\t\t\t\tcallback(\"No video id found\")\n\t\t\t\treturn\n\t\t\tend\n\n\t\t\tdata.title = item.snippet.title\n\t\t\tdata.duration = tonumber(PTToSeconds(item.contentDetails.duration))\n\t\t\tdata.raw = item\n\t\telse\n\t\t\tcallback(result)\n\t\t\treturn\n\t\tend\n\n\t\tcallback(nil, data)\n\tend, function(err) callback(\"HTTP: \" .. err) end)\nend\n\nfunction YoutubeService:hasReliablePlaybackEvents(media)\n\treturn true\nend\n\nreturn YoutubeService\n"
 -- 'serviceloader'; CodeLen/MinifiedLen 533/533; Dependencies [servicebase,service_html,service_bass,media,oop]
 medialib.modulePlaceholder("serviceloader")
 do
